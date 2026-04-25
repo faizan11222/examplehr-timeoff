@@ -1,61 +1,37 @@
 /**
- * In-memory HCM state used by mock route handlers.
- * Uses a global to survive Next.js hot-reload in dev.
+ * HCM mock store.
+ * Uses Vercel KV (Redis) in production when KV_REST_API_URL is set,
+ * falls back to a global in-memory store for local development.
  */
 
 import type { Balance, Employee, Location, TimeOffRequest } from '@/types';
 
-const SILENT_FAILURE_RATE = 0.05; // 5% of POSTs silently fail
+const SILENT_FAILURE_RATE = 0.05;
+const KV_KEY = 'hcm:store:v1';
+const HAS_KV = !!(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
 
-interface HCMStore {
-  balances: Map<string, Balance>;
-  requests: Map<string, TimeOffRequest>;
-  employees: Map<string, Employee>;
-  locations: Map<string, Location>;
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface StoreData {
+  balances: Record<string, Balance>;
+  requests: Record<string, TimeOffRequest>;
 }
 
-function balanceKey(employeeId: string, locationId: string) {
-  return `${employeeId}::${locationId}`;
-}
+// ─── Seed ─────────────────────────────────────────────────────────────────────
 
-function makeStore(): HCMStore {
-  const locations = new Map<string, Location>([
-    ['loc-nyc', { id: 'loc-nyc', name: 'New York' }],
-    ['loc-lon', { id: 'loc-lon', name: 'London' }],
-    ['loc-syd', { id: 'loc-syd', name: 'Sydney' }],
-  ]);
+export const LOCATIONS: Record<string, Location> = {
+  'loc-nyc': { id: 'loc-nyc', name: 'New York' },
+  'loc-lon': { id: 'loc-lon', name: 'London' },
+  'loc-syd': { id: 'loc-syd', name: 'Sydney' },
+};
 
-  const employees = new Map<string, Employee>([
-    [
-      'emp-001',
-      {
-        id: 'emp-001',
-        name: 'Alice Johnson',
-        email: 'alice@examplehr.com',
-        locationIds: ['loc-nyc', 'loc-lon'],
-      },
-    ],
-    [
-      'emp-002',
-      {
-        id: 'emp-002',
-        name: 'Bob Smith',
-        email: 'bob@examplehr.com',
-        locationIds: ['loc-nyc'],
-      },
-    ],
-    [
-      'mgr-001',
-      {
-        id: 'mgr-001',
-        name: 'Carol Martinez',
-        email: 'carol@examplehr.com',
-        locationIds: ['loc-nyc', 'loc-lon', 'loc-syd'],
-      },
-    ],
-  ]);
+export const EMPLOYEES: Record<string, Employee> = {
+  'emp-001': { id: 'emp-001', name: 'Alice Johnson', email: 'alice@examplehr.com', locationIds: ['loc-nyc', 'loc-lon'] },
+  'emp-002': { id: 'emp-002', name: 'Bob Smith', email: 'bob@examplehr.com', locationIds: ['loc-nyc'] },
+  'mgr-001': { id: 'mgr-001', name: 'Carol Martinez', email: 'carol@examplehr.com', locationIds: ['loc-nyc', 'loc-lon', 'loc-syd'] },
+};
 
-  const balances = new Map<string, Balance>();
+function makeSeedData(): StoreData {
   const seed: Array<[string, string, number]> = [
     ['emp-001', 'loc-nyc', 12],
     ['emp-001', 'loc-lon', 5],
@@ -64,100 +40,78 @@ function makeStore(): HCMStore {
     ['mgr-001', 'loc-lon', 10],
     ['mgr-001', 'loc-syd', 7],
   ];
+  const balances: Record<string, Balance> = {};
   for (const [eid, lid, avail] of seed) {
-    balances.set(balanceKey(eid, lid), {
-      employeeId: eid,
-      locationId: lid,
-      available: avail,
-      pending: 0,
-      unit: 'days',
+    balances[`${eid}::${lid}`] = {
+      employeeId: eid, locationId: lid,
+      available: avail, pending: 0, unit: 'days',
       asOf: new Date().toISOString(),
-    });
+    };
   }
-
-  return { balances, requests: new Map(), employees, locations };
+  return { balances, requests: {} };
 }
 
-// Attach to globalThis so Next.js hot-reload reuses the same instance
+// ─── KV backend ───────────────────────────────────────────────────────────────
+
+async function kvLoad(): Promise<StoreData> {
+  const { kv } = await import('@vercel/kv');
+  const data = await kv.get<StoreData>(KV_KEY);
+  if (!data) {
+    const seed = makeSeedData();
+    await kv.set(KV_KEY, seed);
+    return seed;
+  }
+  return data;
+}
+
+async function kvSave(data: StoreData): Promise<void> {
+  const { kv } = await import('@vercel/kv');
+  await kv.set(KV_KEY, data);
+}
+
+// ─── In-memory fallback ───────────────────────────────────────────────────────
+
 declare global {
   // eslint-disable-next-line no-var
-  var __hcmStore: HCMStore | undefined;
+  var __hcmStore: StoreData | undefined;
 }
 
-export function getStore(): HCMStore {
+function memLoad(): StoreData {
   if (!globalThis.__hcmStore) {
-    globalThis.__hcmStore = makeStore();
+    globalThis.__hcmStore = makeSeedData();
   }
   return globalThis.__hcmStore;
 }
 
-export function getBalance(employeeId: string, locationId: string): Balance | null {
-  return getStore().balances.get(balanceKey(employeeId, locationId)) ?? null;
+function memSave(data: StoreData) {
+  globalThis.__hcmStore = data;
 }
 
-export function getBalancesForEmployee(employeeId: string): Balance[] {
-  return Array.from(getStore().balances.values()).filter(
-    (b) => b.employeeId === employeeId,
-  );
+// ─── Public async API (used by all route handlers) ───────────────────────────
+
+export async function loadStore(): Promise<StoreData> {
+  return HAS_KV ? kvLoad() : memLoad();
 }
 
-export function getAllBalances(): Balance[] {
-  return Array.from(getStore().balances.values());
+export async function saveStore(data: StoreData): Promise<void> {
+  if (HAS_KV) await kvSave(data);
+  else memSave(data);
 }
 
-export function setBalance(balance: Balance) {
-  const store = getStore();
-  store.balances.set(balanceKey(balance.employeeId, balance.locationId), {
-    ...balance,
-    asOf: new Date().toISOString(),
-  });
-}
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-export function getRequest(id: string): TimeOffRequest | null {
-  return getStore().requests.get(id) ?? null;
-}
-
-export function getRequestsForEmployee(employeeId: string): TimeOffRequest[] {
-  return Array.from(getStore().requests.values()).filter(
-    (r) => r.employeeId === employeeId,
-  );
-}
-
-export function getPendingRequests(): TimeOffRequest[] {
-  return Array.from(getStore().requests.values()).filter(
-    (r) => r.status === 'pending',
-  );
-}
-
-export function saveRequest(req: TimeOffRequest) {
-  getStore().requests.set(req.id, req);
+export function bkey(employeeId: string, locationId: string) {
+  return `${employeeId}::${locationId}`;
 }
 
 export function getEmployee(id: string): Employee | null {
-  return getStore().employees.get(id) ?? null;
-}
-
-export function getAllEmployees(): Employee[] {
-  return Array.from(getStore().employees.values());
+  return EMPLOYEES[id] ?? null;
 }
 
 export function getLocation(id: string): Location | null {
-  return getStore().locations.get(id) ?? null;
+  return LOCATIONS[id] ?? null;
 }
 
 export function willSilentlyFail(): boolean {
   return Math.random() < SILENT_FAILURE_RATE;
-}
-
-export function applyAnniversaryBonus(employeeId: string, bonusDays = 5): Balance[] {
-  const store = getStore();
-  const updated: Balance[] = [];
-  for (const [key, balance] of store.balances) {
-    if (balance.employeeId === employeeId) {
-      const next = { ...balance, available: balance.available + bonusDays, asOf: new Date().toISOString() };
-      store.balances.set(key, next);
-      updated.push(next);
-    }
-  }
-  return updated;
 }

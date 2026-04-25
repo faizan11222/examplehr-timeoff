@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { useState } from 'react';
 import { Button } from './ui/Button';
 import { Alert } from './ui/Alert';
 import type { Balance, SubmitRequestPayload } from '@/types';
@@ -26,17 +26,20 @@ export function RequestForm({
   locationNames = {},
 }: RequestFormProps) {
   const [locationId, setLocationId] = useState(balances[0]?.locationId ?? '');
-  const [days, setDays] = useState(1);
+  // Use string so the input is truly empty until the user types
+  const [daysStr, setDaysStr] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [note, setNote] = useState('');
 
+  const days = daysStr === '' ? 0 : parseInt(daysStr, 10);
   const selectedBalance = balances.find((b) => b.locationId === locationId);
-  const isInsufficient = selectedBalance ? days > selectedBalance.available : false;
+  const isInsufficient = daysStr !== '' && selectedBalance ? days > selectedBalance.available : false;
+  const isDaysEmpty = daysStr === '' || days < 1;
 
-  function handleSubmit(e: FormEvent) {
+  function handleSubmit(e: { preventDefault(): void }) {
     e.preventDefault();
-    if (isInsufficient || !locationId || !startDate || !endDate) return;
+    if (isInsufficient || isDaysEmpty || !locationId || !startDate || !endDate) return;
     onSubmit({ employeeId, locationId, days, startDate, endDate, note: note || undefined });
   }
 
@@ -79,7 +82,7 @@ export function RequestForm({
             id="location"
             value={locationId}
             onChange={(e) => setLocationId(e.target.value)}
-            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             required
           >
             {balances.map((b) => (
@@ -98,10 +101,15 @@ export function RequestForm({
             id="days"
             type="number"
             min={1}
-            max={selectedBalance?.available ?? 1}
-            value={days}
-            onChange={(e) => setDays(Number(e.target.value))}
-            className={`w-full rounded-md border px-3 py-2 text-sm focus:outline-none focus:ring-1 ${isInsufficient ? 'border-red-400 focus:border-red-500 focus:ring-red-500' : 'border-gray-300 focus:border-blue-500 focus:ring-blue-500'}`}
+            max={selectedBalance?.available ?? undefined}
+            value={daysStr}
+            placeholder="e.g. 3"
+            onChange={(e) => {
+              // Allow only positive integers; strip leading zeros
+              const raw = e.target.value.replace(/^0+(?=\d)/, '');
+              setDaysStr(raw);
+            }}
+            className={`w-full rounded-md border px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-1 ${isInsufficient ? 'border-red-400 focus:border-red-500 focus:ring-red-500' : 'border-gray-300 focus:border-blue-500 focus:ring-blue-500'}`}
             required
           />
           {isInsufficient && (
@@ -120,7 +128,7 @@ export function RequestForm({
             type="date"
             value={startDate}
             onChange={(e) => setStartDate(e.target.value)}
-            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             required
           />
         </div>
@@ -135,7 +143,7 @@ export function RequestForm({
             value={endDate}
             min={startDate}
             onChange={(e) => setEndDate(e.target.value)}
-            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             required
           />
         </div>
@@ -149,7 +157,7 @@ export function RequestForm({
             value={note}
             onChange={(e) => setNote(e.target.value)}
             rows={2}
-            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
         </div>
       </div>
@@ -157,7 +165,7 @@ export function RequestForm({
       <Button
         type="submit"
         loading={isSubmitting}
-        disabled={isInsufficient || !locationId || !startDate || !endDate}
+        disabled={isInsufficient || isDaysEmpty || !locationId || !startDate || !endDate}
       >
         Submit Request
       </Button>

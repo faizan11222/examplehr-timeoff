@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getBalance, getEmployee, getLocation } from '@/lib/hcm-store';
+import { loadStore, getEmployee, getLocation, bkey } from '@/lib/hcm-store';
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -26,7 +26,8 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const balance = getBalance(employeeId, locationId);
+  const store = await loadStore();
+  const balance = store.balances[bkey(employeeId, locationId)];
   if (!balance) {
     return NextResponse.json({ error: { code: 'NOT_FOUND' } }, { status: 404 });
   }

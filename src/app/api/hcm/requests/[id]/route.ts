@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import {
-  getBalance,
-  getRequest,
-  saveRequest,
-  setBalance,
-} from '@/lib/hcm-store';
+import { loadStore, saveStore, bkey } from '@/lib/hcm-store';
 
 export async function PATCH(
   req: NextRequest,
@@ -21,11 +16,12 @@ export async function PATCH(
     );
   }
 
-  const request = getRequest(id);
+  const store = await loadStore();
+  const request = store.requests[id];
+
   if (!request) {
     return NextResponse.json({ error: { code: 'NOT_FOUND' } }, { status: 404 });
   }
-
   if (request.status !== 'pending') {
     return NextResponse.json(
       { error: { code: 'CONFLICT', message: `Request already ${request.status}` } },
@@ -33,37 +29,35 @@ export async function PATCH(
     );
   }
 
-  const balance = getBalance(request.employeeId, request.locationId);
-  if (!balance) {
-    return NextResponse.json({ error: { code: 'NOT_FOUND' } }, { status: 404 });
-  }
+  const key = bkey(request.employeeId, request.locationId);
+  const balance = store.balances[key];
 
-  const now = new Date().toISOString();
-
-  if (decision === 'approved') {
-    // Confirm the deduction (already removed from available on submission)
-    // Just reduce the pending counter
-    setBalance({
-      ...balance,
-      pending: Math.max(0, balance.pending - request.days),
-    });
-  } else {
-    // Denied: restore available balance
-    setBalance({
-      ...balance,
-      available: balance.available + request.days,
-      pending: Math.max(0, balance.pending - request.days),
-    });
+  if (balance) {
+    if (decision === 'approved') {
+      store.balances[key] = {
+        ...balance,
+        pending: Math.max(0, balance.pending - request.days),
+        asOf: new Date().toISOString(),
+      };
+    } else {
+      store.balances[key] = {
+        ...balance,
+        available: balance.available + request.days,
+        pending: Math.max(0, balance.pending - request.days),
+        asOf: new Date().toISOString(),
+      };
+    }
   }
 
   const updated = {
     ...request,
     status: decision,
-    decidedAt: now,
+    decidedAt: new Date().toISOString(),
     decisionNote,
   } as const;
 
-  saveRequest(updated);
+  store.requests[id] = updated;
+  await saveStore(store);
 
   return NextResponse.json({ data: updated });
 }
