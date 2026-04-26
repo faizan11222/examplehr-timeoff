@@ -1,36 +1,94 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ExampleHR — Time-Off Frontend
+
+A production-grade Time-Off management interface built as a take-home assessment for Wizdaa.
+
+## Live Deployments
+
+| | Link |
+|---|---|
+| **App (Vercel)** | https://examplehr-timeoff.vercel.app |
+| **Storybook (Chromatic)** | https://69ed2e91158bbe4ae371f685-mfzpyxhrki.chromatic.com |
+| **GitHub** | https://github.com/faizan11222/examplehr-timeoff |
+
+---
+
+## Overview
+
+ExampleHR's Time-Off module lets employees submit leave requests and managers approve or deny them, while all authoritative data lives in a third-party HCM (simulated). The core engineering challenges:
+
+- **Optimistic UI** — employee balance decrements instantly; rolls back cleanly if HCM rejects (including silent 200 failures)
+- **In-flight conflict protection** — background polls never overwrite a balance while a mutation is in progress
+- **Stale data detection** — `StaleIndicator` badges when HCM data is > 5 min old
+- **Persistent state across serverless invocations** — Vercel KV backs the mock HCM store in production
+
+Full design rationale and architecture decisions are in [TRD.md](./TRD.md).
+
+---
+
+## Stack
+
+| Layer | Technology |
+|---|---|
+| Framework | Next.js 16 (App Router) + TypeScript |
+| Server state | TanStack Query v5 |
+| Client state | Zustand v5 |
+| Styling | Tailwind CSS v4 |
+| Component explorer | Storybook 10 (`@storybook/nextjs-vite`) |
+| Unit / hook tests | Vitest 4 + React Testing Library + MSW v2 |
+| E2E tests | Playwright |
+| Persistent store (prod) | Vercel KV (Redis) |
+
+---
+
+## Mock HCM API
+
+All endpoints live under `/api/hcm/`:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/hcm/balance` | Single balance cell (authoritative read) |
+| `GET` | `/api/hcm/balances` | All balances for an employee |
+| `POST` | `/api/hcm/requests` | Submit a time-off request |
+| `GET` | `/api/hcm/requests` | List requests (filterable by status) |
+| `PATCH` | `/api/hcm/requests/[id]` | Approve or deny a request |
+| `POST` | `/api/hcm/trigger/anniversary` | Fire anniversary bonus (test harness) |
+
+Simulated behaviours: 5% silent failure rate, configurable `?delay=ms` latency, insufficient-balance `422`, invalid-dimension `404`.
+
+---
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev        # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Two views:
+- `/employee` — submit requests, see balance table, reconciliation banners
+- `/manager` — approve / deny pending requests with live balance reads
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Tests
 
-## Learn More
+```bash
+npm run test          # unit + hook tests (Vitest)
+npm run test:coverage # coverage report
+npm run test:e2e      # Playwright end-to-end (requires dev server)
+npm run storybook     # interactive component explorer
+```
 
-To learn more about Next.js, take a look at the following resources:
+**Unit / hook tests (25 passing):**
+- `useSubmitRequest` — optimistic decrement, 422 rollback, silent-failure rollback, success path
+- `BalanceTable` — loading / empty / stale / error states
+- `RequestForm` — validation guards, insufficient-balance error, submit flow
+- `RequestCard` — manager approve / deny interactions
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+**Playwright E2E:**
+- Balance load and display
+- Valid submit → pending state
+- Overflow guard (cannot submit more days than available)
+- Anniversary bonus trigger
+- Full submit → approve lifecycle
+- Full submit → deny lifecycle with balance restoration
