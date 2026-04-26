@@ -1,14 +1,19 @@
 /**
  * HCM mock store.
- * Uses Vercel KV (Redis) in production when KV_REST_API_URL is set,
- * falls back to a global in-memory store for local development.
+ * Production: reads from Vercel Edge Config, writes back via Vercel REST API.
+ * Local dev: in-memory global (single Next.js process).
  */
 
 import type { Balance, Employee, Location, TimeOffRequest } from '@/types';
 
 const SILENT_FAILURE_RATE = 0.05;
-const KV_KEY = 'hcm:store:v1';
-const HAS_KV = !!(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
+const EC_KEY = 'hcm-store-data';
+
+const HAS_EC = !!(
+  process.env.EDGE_CONFIG &&
+  process.env.VERCEL_API_TOKEN &&
+  process.env.EDGE_CONFIG_ID
+);
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -51,22 +56,38 @@ function makeSeedData(): StoreData {
   return { balances, requests: {} };
 }
 
-// ─── KV backend ───────────────────────────────────────────────────────────────
+// ─── Edge Config backend ──────────────────────────────────────────────────────
 
-async function kvLoad(): Promise<StoreData> {
-  const { kv } = await import('@vercel/kv');
-  const data = await kv.get<StoreData>(KV_KEY);
+async function ecLoad(): Promise<StoreData> {
+  const { get } = await import('@vercel/edge-config');
+  const data = await get<StoreData>(EC_KEY);
   if (!data) {
     const seed = makeSeedData();
-    await kv.set(KV_KEY, seed);
+    await ecSave(seed);
     return seed;
   }
   return data;
 }
 
-async function kvSave(data: StoreData): Promise<void> {
-  const { kv } = await import('@vercel/kv');
-  await kv.set(KV_KEY, data);
+async function ecSave(data: StoreData): Promise<void> {
+  const ecId = process.env.EDGE_CONFIG_ID!;
+  const teamId = process.env.VERCEL_TEAM_ID;
+  const token = process.env.VERCEL_API_TOKEN!;
+
+  const url = teamId
+    ? `https://api.vercel.com/v1/edge-config/${ecId}/items?teamId=${teamId}`
+    : `https://api.vercel.com/v1/edge-config/${ecId}/items`;
+
+  await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      items: [{ operation: 'upsert', key: EC_KEY, value: data }],
+    }),
+  });
 }
 
 // ─── In-memory fallback ───────────────────────────────────────────────────────
@@ -90,11 +111,11 @@ function memSave(data: StoreData) {
 // ─── Public async API (used by all route handlers) ───────────────────────────
 
 export async function loadStore(): Promise<StoreData> {
-  return HAS_KV ? kvLoad() : memLoad();
+  return HAS_EC ? ecLoad() : memLoad();
 }
 
 export async function saveStore(data: StoreData): Promise<void> {
-  if (HAS_KV) await kvSave(data);
+  if (HAS_EC) await ecSave(data);
   else memSave(data);
 }
 
